@@ -1,0 +1,42 @@
+name: Create activity discussions
+
+# Run once from the Actions tab (Run workflow) after Discussions is switched on.
+# Posts one thread per file in discussions/ to the "General" category.
+# Safe to re-run: threads whose title already exists are skipped.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  discussions: write
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const q = await github.graphql(`query($o:String!,$r:String!){
+              repository(owner:$o,name:$r){ id hasDiscussionsEnabled
+                discussionCategories(first:25){ nodes { id name } }
+                discussions(first:100){ nodes { title } } } }`, { o: owner, r: repo });
+            const r = q.repository;
+            if (!r.hasDiscussionsEnabled) core.setFailed('Discussions is off. Turn it on in Settings > General > Features, then run again.');
+            const cat = r.discussionCategories.nodes.find(c => c.name === 'General') || r.discussionCategories.nodes[0];
+            const have = new Set(r.discussions.nodes.map(d => d.title));
+            // Created in reverse so M1 ends up at the top of the list.
+            const order = ['A3','A2','A1','M5','M4','M3','M2','M1'];
+            for (const k of order) {
+              const title = fs.readFileSync(`discussions/${k}.title`, 'utf8').trim();
+              if (have.has(title)) { core.info(`Skip (exists): ${title}`); continue; }
+              const body = fs.readFileSync(`discussions/${k}.md`, 'utf8');
+              const res = await github.graphql(`mutation($r:ID!,$c:ID!,$t:String!,$b:String!){
+                createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){ discussion { url } } }`,
+                { r: r.id, c: cat.id, t: title, b: body });
+              core.info(`Created: ${res.createDiscussion.discussion.url}`);
+              await new Promise(s => setTimeout(s, 1500));
+            }
